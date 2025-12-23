@@ -1,0 +1,95 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        AR_REPO = 'asia-southeast1-docker.pkg.dev/extreme-window-472718-d3/netflix-repo/netflix'  // Thay project ID nếu khác
+        TMDB_KEY = credentials('tmdb-key')  // Tạo credential secret text ID 'tmdb-key' với API key thật
+    }
+    stages {
+        stage('clean workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Aakibgithuber/Deploy-Netflix-Clone-on-Kubernetes.git'
+            }
+        }
+        stage("Sonarqube Analysis ") {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Netflix \
+                    -Dsonar.projectKey=Netflix \
+                    -Dsonar.sources=. \
+                    -Dsonar.host.url=http://34.87.72.202:9000 \
+                    -Dsonar.login=sqp_1e61c830b3b400c4f36d381440131aca862b0948'''
+                }
+            }
+        }
+        stage("quality gate") {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh "npm install"
+            }
+        }
+        stage('OWASP FS SCAN') {
+            steps {
+                withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {  // Thêm credential NVD key
+                    dependencyCheck additionalArguments: "--scan ./ --disableYarnAudit --disableNodeAudit --nvdApiKey ${NVD_API_KEY}", odcInstallation: 'DP-Check'
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
+            }
+        }       
+        stage('TRIVY FS SCAN') {
+            steps {
+                sh "trivy fs . > trivyfs.txt"
+            }
+        }
+        stage("Docker Build & Push") {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: 'gcp-ar-key', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+                        sh '''
+                        gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+                        gcloud auth configure-docker asia-southeast1-docker.pkg.dev --quiet
+                        docker build --build-arg TMDB_V3_API_KEY=${TMDB_KEY} -t netflix:latest .
+                        docker tag netflix:latest ${AR_REPO}:latest
+                        docker push ${AR_REPO}:latest
+                        '''
+                    }
+                }
+            }
+        }
+        stage("TRIVY") {
+            steps {
+                sh "trivy image ${AR_REPO}:latest > trivyimage.txt"  // Scan sau push; thêm --exit-code 1 --severity CRITICAL nếu muốn fail
+            }
+        }
+        stage('Deploy to container') {
+            steps {
+                sh '''
+                docker stop netflix || true && docker rm netflix || true
+                docker pull ${AR_REPO}:latest
+                docker run -d --name netflix -p 8081:80 ${AR_REPO}:latest
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            archiveArtifacts artifacts: 'trivyfs.txt, trivyimage.txt'  // Lưu report cho báo cáo
+            echo 'Pipeline completed'
+        }
+    }
+}

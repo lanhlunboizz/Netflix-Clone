@@ -18,6 +18,7 @@ Deploy Netflix Clone on Cloud using Jenkins - DevSecOps Project!
 **Step 3: Install Docker and Run the App Using a Container:**
 
 -   Set up Docker on the EC2 instance:
+
     ```bash
 
     sudo apt-get update
@@ -26,7 +27,9 @@ Deploy Netflix Clone on Cloud using Jenkins - DevSecOps Project!
     newgrp docker
     sudo chmod 777 /var/run/docker.sock
     ```
+
 -   Build and run your application using Docker containers:
+
     ```bash
     docker build -t netflix .
     docker run -d --name netflix -p 8081:80 netflix:latest
@@ -59,7 +62,7 @@ docker build --build-arg TMDB_V3_API_KEY=7d35b5eff26ea6743d04f5bf529caafa -t net
 
 1. **Install SonarQube and Trivy:**
     - Install SonarQube and Trivy on the EC2 instance to scan for vulnerabilities.
-        sonarqube
+      sonarqube
         ```
         docker run -d --name sonar -p 9000:9000 sonarqube:lts-community
         ```
@@ -109,7 +112,7 @@ docker build --build-arg TMDB_V3_API_KEY=7d35b5eff26ea6743d04f5bf529caafa -t net
     ```
 
     - Access Jenkins in a web browser using the public IP of your EC2 instance.
-        publicIp:8080
+      publicIp:8080
 
 2. **Install Necessary Plugins in Jenkins:**
 
