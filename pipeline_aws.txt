@@ -1,0 +1,139 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_IMAGE = 'docker.io/callmehako/netflix'
+        TMDB_KEY = credentials('tmdb-key')
+    }
+
+    stages {
+
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Checkout Code') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/lanhlunboizz/Netflix-Clone.git'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh """
+                    ${SCANNER_HOME}/bin/sonar-scanner \
+                      -Dsonar.projectName=Netflix \
+                      -Dsonar.projectKey=Netflix \
+                      -Dsonar.sources=. \
+                      -Dsonar.login=${SONAR_AUTH_TOKEN}
+                    """
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                waitForQualityGate abortPipeline: false,
+                    credentialsId: 'sonar-token'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
+
+        stage('OWASP FS SCAN') {
+            steps {
+                withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_API_KEY')]) {
+                    dependencyCheck additionalArguments: """
+                    --scan ./
+                    --exclude **/node_modules/**
+                    --exclude **/.scannerwork/**
+                    --exclude **/build/**
+                    --exclude **/dist/**
+                    --disableYarnAudit
+                    --disableNodeAudit
+                    --nvdApiKey ${NVD_API_KEY}
+                    """,
+                    odcInstallation: 'DP-Check'
+
+                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                }
+            }
+        }
+
+        stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs . > trivyfs.txt'
+            }
+        }
+
+        stage("Docker Build & Push") {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    ),
+                    string(
+                        credentialsId: 'tmdb-key',
+                        variable: 'TMDB_V3_API_KEY'
+                    )
+                ]) {
+                    sh '''
+                    echo "===> Docker login"
+                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+                    echo "===> Docker build"
+                    docker build \
+                      --build-arg TMDB_V3_API_KEY="$TMDB_V3_API_KEY" \
+                      -t "${DOCKER_IMAGE}:latest" .
+
+                    echo "===> Docker images"
+                    docker images | grep netflix
+
+                    echo "===> Docker push"
+                    docker push "${DOCKER_IMAGE}:latest"
+                    '''
+                }
+            }
+        }
+
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image ${DOCKER_IMAGE}:latest > trivyimage.txt"
+            }
+        }
+
+        stage('Deploy Netflix Container') {
+            steps {
+                sh """
+                docker rm -f netflix || true
+                docker pull ${DOCKER_IMAGE}:latest
+                docker run -d --name netflix -p 8081:80 ${DOCKER_IMAGE}:latest
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'trivyfs.txt, trivyimage.txt'
+            echo 'Pipeline completed successfully'
+        }
+    }
+}
